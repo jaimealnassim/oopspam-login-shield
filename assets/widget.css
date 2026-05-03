@@ -1,0 +1,184 @@
+/**
+ * OOPSpam Login Shield — widget styles
+ * Altcha-inspired checkbox card injected into wp-login.php forms.
+ */
+
+#oopspam-ls-widget.oolsh-widget {
+	box-sizing: border-box;
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	width: 100%;
+	margin: 0 0 16px 0;
+	padding: 12px 14px;
+	background: #f6f7f9;
+	border: 1px solid #d6dae0;
+	border-radius: 6px;
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+	font-size: 13px;
+	line-height: 1.3;
+	color: #1f2937;
+	transition: border-color .18s ease, background-color .18s ease;
+}
+
+#oopspam-ls-widget.oolsh-widget * {
+	box-sizing: border-box;
+}
+
+/* ---------- Checkbox box ---------- */
+
+#oopspam-ls-widget .oolsh-checkbox {
+	position: relative;
+	flex: 0 0 auto;
+	width: 26px;
+	height: 26px;
+	border: 2px solid #b0b8c1;
+	border-radius: 4px;
+	background: #ffffff;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	transition: border-color .18s ease, background-color .18s ease;
+}
+
+#oopspam-ls-widget .oolsh-checkbox:focus-visible {
+	outline: 2px solid #2563eb;
+	outline-offset: 2px;
+}
+
+#oopspam-ls-widget .oolsh-checkbox:hover {
+	border-color: #6b7280;
+}
+
+#oopspam-ls-widget .oolsh-spinner,
+#oopspam-ls-widget .oolsh-check,
+#oopspam-ls-widget .oolsh-x {
+	display: none;
+}
+
+#oopspam-ls-widget .oolsh-spinner {
+	width: 16px;
+	height: 16px;
+	border: 2px solid #d6dae0;
+	border-top-color: #2563eb;
+	border-radius: 50%;
+	animation: oolsh-spin .8s linear infinite;
+}
+
+#oopspam-ls-widget .oolsh-check,
+#oopspam-ls-widget .oolsh-x {
+	width: 16px;
+	height: 16px;
+}
+
+/* ---------- Text block ---------- */
+
+#oopspam-ls-widget .oolsh-text {
+	flex: 1 1 auto;
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+#oopspam-ls-widget .oolsh-label {
+	font-weight: 500;
+	color: #1f2937;
+}
+
+#oopspam-ls-widget .oolsh-brand {
+	margin-top: 2px;
+	font-size: 11px;
+	color: #6b7280;
+	letter-spacing: .02em;
+}
+
+#oopspam-ls-widget .oolsh-brand a {
+	color: inherit;
+	text-decoration: none;
+	border-bottom: 1px dotted #b0b8c1;
+}
+
+#oopspam-ls-widget .oolsh-brand a:hover,
+#oopspam-ls-widget .oolsh-brand a:focus {
+	color: #1f2937;
+	border-bottom-color: #6b7280;
+}
+
+/* ---------- States ---------- */
+
+/* Idle */
+#oopspam-ls-widget[data-state="idle"] .oolsh-checkbox {
+	cursor: pointer;
+}
+
+/* Verifying */
+#oopspam-ls-widget[data-state="verifying"] .oolsh-spinner {
+	display: block;
+}
+#oopspam-ls-widget[data-state="verifying"] .oolsh-checkbox {
+	border-color: #c4cad2;
+	cursor: progress;
+}
+
+/* Verified */
+#oopspam-ls-widget[data-state="verified"] {
+	background: #f0fdf4;
+	border-color: #bbf7d0;
+}
+#oopspam-ls-widget[data-state="verified"] .oolsh-checkbox {
+	background: #16a34a;
+	border-color: #16a34a;
+	cursor: default;
+}
+#oopspam-ls-widget[data-state="verified"] .oolsh-check {
+	display: block;
+	color: #ffffff;
+}
+#oopspam-ls-widget[data-state="verified"] .oolsh-label {
+	color: #166534;
+}
+
+/* Failed */
+#oopspam-ls-widget[data-state="failed"] {
+	background: #fef2f2;
+	border-color: #fecaca;
+}
+#oopspam-ls-widget[data-state="failed"] .oolsh-checkbox {
+	background: #ffffff;
+	border-color: #dc2626;
+	cursor: pointer;
+}
+#oopspam-ls-widget[data-state="failed"] .oolsh-x {
+	display: block;
+	color: #dc2626;
+}
+#oopspam-ls-widget[data-state="failed"] .oolsh-label {
+	color: #991b1b;
+}
+
+/* ---------- Animation ---------- */
+
+@keyframes oolsh-spin {
+	to { transform: rotate(360deg); }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+	#oopspam-ls-widget .oolsh-spinner {
+		animation-duration: 1.6s;
+	}
+	#oopspam-ls-widget.oolsh-widget,
+	#oopspam-ls-widget .oolsh-checkbox {
+		transition: none;
+	}
+}
+
+/* ---------- wp-login.php tweaks ---------- */
+
+/* Login form layout puts inputs at full-width — keep ours consistent. */
+body.login #loginform #oopspam-ls-widget,
+body.login #registerform #oopspam-ls-widget,
+body.login #lostpasswordform #oopspam-ls-widget {
+	margin: 14px 0 18px;
+}

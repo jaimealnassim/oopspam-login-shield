@@ -1,0 +1,151 @@
+/**
+ * OOPSpam Login Shield — admin styles for the Login Log tab.
+ */
+
+/* Wrapper + controls row (length selector left, search right) */
+.oopspam-ls-table-wrapper {
+	margin-top: 16px;
+}
+
+.oopspam-ls-table-controls {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 10px 0;
+	flex-wrap: wrap;
+	gap: 12px;
+}
+
+.oopspam-ls-table-controls label {
+	font-size: 13px;
+	color: #1d2327;
+}
+
+.oopspam-ls-table-controls select {
+	margin: 0 4px;
+}
+
+.oopspam-ls-table-controls .oopspam-ls-search {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.oopspam-ls-table-controls input[type="search"] {
+	min-width: 220px;
+}
+
+/* The table itself */
+.oopspam-ls-table-wrapper table.widefat {
+	width: 100%;
+}
+
+.oopspam-ls-table-wrapper th[data-sortable] {
+	cursor: pointer;
+	user-select: none;
+	position: relative;
+	padding-right: 22px;
+}
+
+.oopspam-ls-table-wrapper th[data-sortable]:focus-visible {
+	outline: 2px solid #2271b1;
+	outline-offset: -2px;
+}
+
+.oopspam-ls-table-wrapper th[data-sortable]::after {
+	content: '\2195'; /* ↕ */
+	position: absolute;
+	right: 6px;
+	top: 50%;
+	transform: translateY(-50%);
+	color: #c4cad2;
+	font-size: 11px;
+	font-weight: normal;
+}
+
+.oopspam-ls-table-wrapper th.oopspam-ls-sort-asc::after  { content: '\2191'; color: #1d2327; } /* ↑ */
+.oopspam-ls-table-wrapper th.oopspam-ls-sort-desc::after { content: '\2193'; color: #1d2327; } /* ↓ */
+
+/* Stacked two-line cells (IP + username, attempts + lockouts, etc.) */
+.oopspam-ls-stacked {
+	line-height: 1.45;
+}
+
+.oopspam-ls-stacked .primary {
+	font-weight: 500;
+	color: #1d2327;
+}
+
+.oopspam-ls-stacked .secondary {
+	color: #646970;
+	font-size: 12px;
+}
+
+.oopspam-ls-stacked code {
+	font-size: 12px;
+	background: transparent;
+	padding: 0;
+}
+
+/* Locked badge */
+.oopspam-ls-locked-badge {
+	display: inline-block;
+	background: #fbeaea;
+	color: #b32d2e;
+	padding: 2px 8px;
+	border-radius: 10px;
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: .02em;
+}
+
+.oopspam-ls-locked-badge.is-long {
+	background: #fde2e2;
+	color: #8a1c1c;
+}
+
+/* Footer (info left, pagination right) */
+.oopspam-ls-table-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 12px 0;
+	flex-wrap: wrap;
+	gap: 10px;
+}
+
+.oopspam-ls-table-footer .button {
+	margin: 0 1px;
+}
+
+.oopspam-ls-table-info {
+	font-size: 13px;
+	color: #50575e;
+}
+
+/* Empty state */
+.oopspam-ls-empty {
+	padding: 40px 20px;
+	text-align: center;
+	color: #646970;
+	font-style: italic;
+	border: 1px dashed #c3c4c7;
+	border-radius: 4px;
+	background: #fbfbfc;
+}
+
+/* Mobile */
+@media (max-width: 782px) {
+	.oopspam-ls-table-controls,
+	.oopspam-ls-table-footer {
+		flex-direction: column;
+		align-items: stretch;
+	}
+	.oopspam-ls-table-controls .oopspam-ls-search input[type="search"] {
+		width: 100%;
+		min-width: 0;
+	}
+	.oopspam-ls-table-wrapper table.widefat {
+		font-size: 12px;
+	}
+}
