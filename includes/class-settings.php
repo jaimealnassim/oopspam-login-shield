@@ -45,7 +45,11 @@ class OOPSpam_LS_Settings {
 			return;
 		}
 		$tab = isset( $_GET['tab'] ) ? sanitize_key( wp_unslash( (string) $_GET['tab'] ) ) : 'settings';
-		if ( 'log' !== $tab ) {
+
+		// admin.css is shared between the Settings and Log tabs (the Settings
+		// tab uses it for the country picker; the Log tab uses it for the
+		// attempts table and lockout badges).
+		if ( 'settings' !== $tab && 'log' !== $tab ) {
 			return;
 		}
 
@@ -55,6 +59,51 @@ class OOPSpam_LS_Settings {
 			array(),
 			OOPSPAM_LS_VERSION
 		);
+
+		// Country picker enhancement only on the Settings tab.
+		if ( 'settings' === $tab ) {
+			wp_enqueue_script(
+				'oopspam-ls-country-picker',
+				OOPSPAM_LS_URL . 'assets/admin-country-picker.js',
+				array(),
+				OOPSPAM_LS_VERSION,
+				true
+			);
+
+			// Critical picker styles, inlined into the page response. Belt-and-
+			// suspenders against the external admin.css being stale-cached on
+			// mobile browsers (Brave Android in particular). Cache busting via
+			// version query string isn't always honored, but inline styles
+			// arrive in the HTML itself and can't be cached separately.
+			wp_add_inline_style( 'oopspam-ls-admin', self::picker_inline_css() );
+		}
+	}
+
+	/**
+	 * The minimum CSS the country picker needs to be usable.
+	 * Duplicates a subset of admin.css so the picker still renders correctly
+	 * even when the external CSS file fails to load fresh.
+	 */
+	private static function picker_inline_css(): string {
+		return '
+.oopspam-ls-country-picker { max-width: 760px; margin: 0 0 14px 0; padding: 14px; border: 1px solid #c3c4c7; border-radius: 4px; background: #fff; }
+.oopspam-ls-region-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.oopspam-ls-region-btn.is-active { background: #e6f0fa !important; border-color: #2271b1 !important; color: #135e96 !important; }
+.oopspam-ls-region-btn.is-remove { color: #b32d2e !important; border-color: #d4a3a4 !important; }
+.oopspam-ls-picker-status { font-size: 12px; color: #50575e; margin-bottom: 10px; padding: 6px 10px; background: #f6f7f7; border-radius: 3px; display: inline-block; }
+.oopspam-ls-country-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 4px; max-height: 320px; overflow-y: auto; padding: 8px; border: 1px solid #dcdcde; border-radius: 3px; background: #fafbfc; }
+.oopspam-ls-chip { display: block; width: 100%; padding: 6px 10px; background: #fff; border: 1px solid #dcdcde; border-radius: 3px; font-size: 12px; cursor: pointer; color: #1d2327; text-align: left; line-height: 1.4; min-height: 32px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.oopspam-ls-chip:hover { background: #f0f0f1; border-color: #8c8f94; }
+.oopspam-ls-chip.is-selected { background: #2271b1; border-color: #135e96; color: #fff; }
+.oopspam-ls-chip-code { display: inline-block; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; font-size: 11px; padding: 1px 5px; margin-right: 7px; background: #f0f0f1; color: #1d2327; border-radius: 2px; vertical-align: middle; }
+.oopspam-ls-chip.is-selected .oopspam-ls-chip-code { background: rgba(255,255,255,0.22); color: #fff; }
+.oopspam-ls-chip-name { display: inline; color: inherit; font-size: 12px; vertical-align: middle; }
+.oopspam-ls-picker-hidden { display: none !important; }
+@media (max-width: 600px) {
+	.oopspam-ls-country-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); max-height: 280px; }
+	.oopspam-ls-chip { padding: 8px 10px; min-height: 36px; }
+}
+';
 	}
 
 	public function menu() {
@@ -108,6 +157,30 @@ class OOPSpam_LS_Settings {
 		// Coordination with OOPSpam Anti-Spam.
 		$clean['takeover_login'] = ! empty( $input['takeover_login'] ) ? 1 : 0;
 
+		// Connector-specific rules (mode-based).
+		$clean['connector_block_vpn_mode']        = self::clamp_mode( $input['connector_block_vpn_mode']        ?? null, array( 'inherit', 'block' ),  'inherit' );
+		$clean['connector_block_datacenter_mode'] = self::clamp_mode( $input['connector_block_datacenter_mode'] ?? null, array( 'inherit', 'block' ),  'inherit' );
+		$clean['connector_block_temp_email_mode'] = self::clamp_mode( $input['connector_block_temp_email_mode'] ?? null, array( 'inherit', 'block' ),  'inherit' );
+		$clean['connector_country_mode']          = self::clamp_mode( $input['connector_country_mode']          ?? null, array( 'inherit', 'custom' ), 'inherit' );
+
+		// Country list: ISO 2-letter codes, comma- or newline-separated.
+		// Stored regardless of mode so toggling mode preserves the list.
+		$raw_countries = isset( $input['connector_blocked_countries'] )
+			? (string) $input['connector_blocked_countries']
+			: '';
+		$parts = preg_split( '/[\s,]+/', $raw_countries );
+		$valid = array();
+		foreach ( (array) $parts as $code ) {
+			$code = strtoupper( trim( (string) $code ) );
+			if ( 2 === strlen( $code ) && ctype_alpha( $code ) ) {
+				$valid[] = $code;
+			}
+		}
+		$clean['connector_blocked_countries'] = implode( ', ', array_values( array_unique( $valid ) ) );
+
+		// Require JavaScript at login.
+		$clean['require_js'] = ! empty( $input['require_js'] ) ? 1 : 0;
+
 		// Limit Login Attempts.
 		$clean['lla_enabled'] = ! empty( $input['lla_enabled'] ) ? 1 : 0;
 
@@ -137,6 +210,15 @@ class OOPSpam_LS_Settings {
 			return $default;
 		}
 		return max( $min, min( $max, (int) $value ) );
+	}
+
+	/**
+	 * Validate a string against a fixed set of allowed values.
+	 * Used for radio-button-style mode settings (inherit | block | custom etc).
+	 */
+	private static function clamp_mode( mixed $value, array $allowed, string $default ): string {
+		$v = is_string( $value ) ? trim( $value ) : '';
+		return in_array( $v, $allowed, true ) ? $v : $default;
 	}
 
 	/* -----------------------------------------------------------------------
@@ -381,6 +463,184 @@ class OOPSpam_LS_Settings {
 							}
 						}
 						?>
+					</td>
+				</tr>
+
+			</table>
+
+			<h2 class="title" style="margin-top:32px;"><?php esc_html_e( 'Connector-specific rules', 'oopspam-login-shield' ); ?></h2>
+			<p style="max-width:760px;">
+				<?php esc_html_e( "Apply stricter spam rules at login than the rest of the site uses. These settings only affect login, registration, and lost-password attempts. They do not change the OOPSpam plugin's sitewide behavior.", 'oopspam-login-shield' ); ?>
+			</p>
+			<p style="max-width:760px;">
+				<?php esc_html_e( "Each rule has two modes. 'Inherit' uses whatever the OOPSpam plugin is currently set to (so if you've turned VPN blocking on sitewide, we block at login too). 'Block at login' forces the rule on regardless, which is useful if you want admins to come from clean IPs even though you allow VPN traffic to read the rest of the site.", 'oopspam-login-shield' ); ?>
+			</p>
+			<p style="max-width:760px; color:#646970; font-size:13px;">
+				<?php esc_html_e( 'Note: when any rule is set to override mode, this plugin calls the OOPSpam API directly with our parameters instead of going through the OOPSpam plugin wrapper. Your existing API key is reused; no separate setup is required.', 'oopspam-login-shield' ); ?>
+			</p>
+
+			<table class="form-table" role="presentation">
+
+				<tr>
+					<th scope="row"><?php esc_html_e( 'Block VPN/proxy', 'oopspam-login-shield' ); ?></th>
+					<td>
+						<fieldset>
+							<legend class="screen-reader-text"><?php esc_html_e( 'Block VPN/proxy mode', 'oopspam-login-shield' ); ?></legend>
+							<?php
+							$vpn_mode = $s['connector_block_vpn_mode'] ?? 'inherit';
+							$ipfilter_opts = get_option( 'oopspamantispam_ipfiltering_settings', array() );
+							$inherited_vpn = is_array( $ipfilter_opts ) && ! empty( $ipfilter_opts['oopspam_block_vpns'] );
+							?>
+							<label style="display:block; margin-bottom:4px;">
+								<input type="radio" name="oopspam_ls_settings[connector_block_vpn_mode]" value="inherit" <?php checked( $vpn_mode, 'inherit' ); ?>>
+								<?php
+								if ( $inherited_vpn ) {
+									esc_html_e( 'Use OOPSpam plugin setting (currently: blocking VPNs sitewide).', 'oopspam-login-shield' );
+								} else {
+									esc_html_e( 'Use OOPSpam plugin setting (currently: VPNs allowed sitewide).', 'oopspam-login-shield' );
+								}
+								?>
+							</label>
+							<label style="display:block;">
+								<input type="radio" name="oopspam_ls_settings[connector_block_vpn_mode]" value="block" <?php checked( $vpn_mode, 'block' ); ?>>
+								<?php esc_html_e( 'Always block at login (override).', 'oopspam-login-shield' ); ?>
+							</label>
+						</fieldset>
+					</td>
+				</tr>
+
+				<tr>
+					<th scope="row"><?php esc_html_e( 'Block datacenter/cloud IPs', 'oopspam-login-shield' ); ?></th>
+					<td>
+						<fieldset>
+							<legend class="screen-reader-text"><?php esc_html_e( 'Block datacenter/cloud IPs mode', 'oopspam-login-shield' ); ?></legend>
+							<?php
+							$dc_mode = $s['connector_block_datacenter_mode'] ?? 'inherit';
+							$inherited_dc = is_array( $ipfilter_opts ) && ! empty( $ipfilter_opts['oopspam_block_cloud_providers'] );
+							?>
+							<label style="display:block; margin-bottom:4px;">
+								<input type="radio" name="oopspam_ls_settings[connector_block_datacenter_mode]" value="inherit" <?php checked( $dc_mode, 'inherit' ); ?>>
+								<?php
+								if ( $inherited_dc ) {
+									esc_html_e( 'Use OOPSpam plugin setting (currently: blocking datacenter IPs sitewide).', 'oopspam-login-shield' );
+								} else {
+									esc_html_e( 'Use OOPSpam plugin setting (currently: datacenter IPs allowed sitewide).', 'oopspam-login-shield' );
+								}
+								?>
+							</label>
+							<label style="display:block;">
+								<input type="radio" name="oopspam_ls_settings[connector_block_datacenter_mode]" value="block" <?php checked( $dc_mode, 'block' ); ?>>
+								<?php esc_html_e( 'Always block at login (override).', 'oopspam-login-shield' ); ?>
+							</label>
+						</fieldset>
+						<p class="description">
+							<?php esc_html_e( "AWS, Azure, GCP, OVH, DigitalOcean, etc. Disable override if you have automation logging in programmatically.", 'oopspam-login-shield' ); ?>
+						</p>
+					</td>
+				</tr>
+
+				<tr>
+					<th scope="row"><?php esc_html_e( 'Block temporary/disposable email', 'oopspam-login-shield' ); ?></th>
+					<td>
+						<fieldset>
+							<legend class="screen-reader-text"><?php esc_html_e( 'Block temporary email mode', 'oopspam-login-shield' ); ?></legend>
+							<?php
+							$temp_mode = $s['connector_block_temp_email_mode'] ?? 'inherit';
+							$main_opts = get_option( 'oopspamantispam_settings', array() );
+							$inherited_temp = is_array( $main_opts ) && ! empty( $main_opts['oopspam_block_temp_email'] );
+							?>
+							<label style="display:block; margin-bottom:4px;">
+								<input type="radio" name="oopspam_ls_settings[connector_block_temp_email_mode]" value="inherit" <?php checked( $temp_mode, 'inherit' ); ?>>
+								<?php
+								if ( $inherited_temp ) {
+									esc_html_e( 'Use OOPSpam plugin setting (currently: blocking temp emails sitewide).', 'oopspam-login-shield' );
+								} else {
+									esc_html_e( 'Use OOPSpam plugin setting (currently: temp emails allowed sitewide).', 'oopspam-login-shield' );
+								}
+								?>
+							</label>
+							<label style="display:block;">
+								<input type="radio" name="oopspam_ls_settings[connector_block_temp_email_mode]" value="block" <?php checked( $temp_mode, 'block' ); ?>>
+								<?php esc_html_e( 'Always block at login (override).', 'oopspam-login-shield' ); ?>
+							</label>
+						</fieldset>
+					</td>
+				</tr>
+
+				<tr>
+					<th scope="row"><?php esc_html_e( 'Country blocklist', 'oopspam-login-shield' ); ?></th>
+					<td>
+						<fieldset>
+							<legend class="screen-reader-text"><?php esc_html_e( 'Country blocklist mode', 'oopspam-login-shield' ); ?></legend>
+							<?php
+							$country_mode = $s['connector_country_mode'] ?? 'inherit';
+
+							// OOPSpam stores oopspam_countryblocklist as an
+							// array (multi-select). Stringify safely for display.
+							$inherited_raw = get_option( 'oopspam_countryblocklist', '' );
+							if ( is_array( $inherited_raw ) ) {
+								$inherited_codes = array();
+								foreach ( $inherited_raw as $cc ) {
+									$cc = strtoupper( trim( (string) $cc ) );
+									if ( 2 === strlen( $cc ) && ctype_alpha( $cc ) ) {
+										$inherited_codes[] = $cc;
+									}
+								}
+								$inherited_list = implode( ', ', $inherited_codes );
+							} else {
+								$inherited_list = (string) $inherited_raw;
+							}
+
+							$inherited_label = '' !== trim( $inherited_list )
+								? sprintf(
+									/* translators: %s: comma-separated list of country codes */
+									__( 'Use OOPSpam plugin setting (currently: %s).', 'oopspam-login-shield' ),
+									$inherited_list
+								)
+								: __( 'Use OOPSpam plugin setting (currently: no countries blocked sitewide).', 'oopspam-login-shield' );
+							?>
+							<label style="display:block; margin-bottom:4px;">
+								<input type="radio" name="oopspam_ls_settings[connector_country_mode]" value="inherit" <?php checked( $country_mode, 'inherit' ); ?>>
+								<?php echo esc_html( $inherited_label ); ?>
+							</label>
+							<label style="display:block; margin-bottom:8px;">
+								<input type="radio" name="oopspam_ls_settings[connector_country_mode]" value="custom" <?php checked( $country_mode, 'custom' ); ?>>
+								<?php esc_html_e( 'Use a custom list at login (override below).', 'oopspam-login-shield' ); ?>
+							</label>
+						</fieldset>
+
+						<label for="oopspam_ls_connector_blocked_countries" class="screen-reader-text">
+							<?php esc_html_e( 'Custom country list', 'oopspam-login-shield' ); ?>
+						</label>
+						<textarea
+							id="oopspam_ls_connector_blocked_countries"
+							name="oopspam_ls_settings[connector_blocked_countries]"
+							rows="3"
+							cols="40"
+							class="code"
+							style="font-family: monospace; max-width: 320px;"
+							placeholder="RU, CN, KP"
+						><?php echo esc_textarea( (string) ( $s['connector_blocked_countries'] ?? '' ) ); ?></textarea>
+						<p class="description">
+							<?php esc_html_e( 'Two-letter ISO country codes, comma- or space-separated. Only used when "Use a custom list at login" is selected above.', 'oopspam-login-shield' ); ?>
+							<a href="https://en.wikipedia.org/wiki/ISO_3166-1_alpha-2" target="_blank" rel="noopener"><?php esc_html_e( 'Country code reference', 'oopspam-login-shield' ); ?></a>
+						</p>
+					</td>
+				</tr>
+
+				<tr>
+					<th scope="row"><?php esc_html_e( 'Require JavaScript', 'oopspam-login-shield' ); ?></th>
+					<td>
+						<label>
+							<input type="checkbox" name="oopspam_ls_settings[require_js]" value="1" <?php checked( ! empty( $s['require_js'] ), true ); ?>>
+							<?php esc_html_e( 'Reject any login, registration, or lost-password submission that did not come from a browser running JavaScript.', 'oopspam-login-shield' ); ?>
+						</label>
+						<p class="description">
+							<?php esc_html_e( "Most bots don't execute JavaScript, so this filters out a large slice of automated traffic before the password is even checked. Real browsers always run it, so legitimate users are unaffected. Independent of the verification widget; works even when the widget is disabled.", 'oopspam-login-shield' ); ?>
+						</p>
+						<p class="description" style="color:#b26900;">
+							<?php esc_html_e( 'If you have any users who deliberately disable JavaScript (privacy-conscious users using NoScript, Tor browsers, etc.) they will be unable to log in.', 'oopspam-login-shield' ); ?>
+						</p>
 					</td>
 				</tr>
 

@@ -182,3 +182,29 @@ body.login #registerform #oopspam-ls-widget,
 body.login #lostpasswordform #oopspam-ls-widget {
 	margin: 14px 0 18px;
 }
+
+/* ---------- Shake animation ---------- */
+
+/* Triggered when the user tries to submit without verifying first
+   (manual mode). Visually nudges attention to the checkbox. */
+@keyframes oolsh-shake {
+	0%, 100% { transform: translateX(0); }
+	15%      { transform: translateX(-6px); }
+	30%      { transform: translateX(6px); }
+	45%      { transform: translateX(-4px); }
+	60%      { transform: translateX(4px); }
+	75%      { transform: translateX(-2px); }
+}
+
+#oopspam-ls-widget.oolsh-shake {
+	animation: oolsh-shake 0.6s cubic-bezier(.36,.07,.19,.97) both;
+	border-color: #dc2626;
+	background: #fef2f2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	#oopspam-ls-widget.oolsh-shake {
+		animation: none;
+		/* Still flash the colors so the cue isn't lost. */
+	}
+}

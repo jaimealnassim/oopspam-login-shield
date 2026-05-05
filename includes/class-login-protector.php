@@ -18,13 +18,25 @@ class OOPSpam_LS_Login_Protector {
 		add_action( 'register_form',     $this->render_widget( ... ) );
 		add_action( 'lostpassword_form', $this->render_widget( ... ) );
 
+		// Independent of the widget: render a JS-presence marker on every
+		// auth form when the require_js setting is on. This filters out
+		// most bots (they don't run JS) before any password check.
+		add_action( 'login_form',        $this->render_js_check_field( ... ) );
+		add_action( 'register_form',     $this->render_js_check_field( ... ) );
+		add_action( 'lostpassword_form', $this->render_js_check_field( ... ) );
+
 		// Enqueue assets only on the login page.
 		add_action( 'login_enqueue_scripts', $this->enqueue( ... ) );
 
-		// Validation hooks.
-		add_filter( 'authenticate',        $this->authenticate( ... ),       30, 3 );
-		add_filter( 'registration_errors', $this->registration_errors( ... ), 5, 3 );
-		add_action( 'lostpassword_post',   $this->lostpassword_post( ... ),  10, 1 );
+		// require_js gate runs early (priority 5 of authenticate, before the
+		// p20 password check) so we reject pre-password for bots that didn't
+		// run JS. Saves API calls and avoids burning quota on obvious bots.
+		add_filter( 'authenticate',        $this->require_js_login_gate( ... ),         5, 3 );
+		add_filter( 'authenticate',        $this->authenticate( ... ),                 30, 3 );
+		add_filter( 'registration_errors', $this->require_js_register_gate( ... ),      4, 3 );
+		add_filter( 'registration_errors', $this->registration_errors( ... ),           5, 3 );
+		add_action( 'lostpassword_post',   $this->require_js_lostpassword_gate( ... ),  9, 1 );
+		add_action( 'lostpassword_post',   $this->lostpassword_post( ... ),            10, 1 );
 	}
 
 	/**
@@ -87,13 +99,14 @@ class OOPSpam_LS_Login_Protector {
 				'nonce'      => wp_create_nonce( OOPSpam_LS_Ajax::NONCE ),
 				'autoVerify' => ! empty( $settings['auto_verify'] ),
 				'i18n'       => array(
-					'idle'      => __( "I'm not a robot", 'oopspam-login-shield' ),
-					'verifying' => __( 'Verifying…', 'oopspam-login-shield' ),
-					'verified'  => __( 'Verified', 'oopspam-login-shield' ),
-					'failed'    => ! empty( $settings['fail_message'] )
+					'idle'           => __( "I'm not a robot", 'oopspam-login-shield' ),
+					'verifying'      => __( 'Verifying…', 'oopspam-login-shield' ),
+					'verified'       => __( 'Verified', 'oopspam-login-shield' ),
+					'failed'         => ! empty( $settings['fail_message'] )
 						? $settings['fail_message']
 						: __( 'Verification failed. Click to retry.', 'oopspam-login-shield' ),
-					'wait'      => __( 'Please wait for verification to finish.', 'oopspam-login-shield' ),
+					'wait'           => __( 'Please wait for verification to finish.', 'oopspam-login-shield' ),
+					'clickToVerify'  => __( "Please click the checkbox above to verify you're not a robot.", 'oopspam-login-shield' ),
 				),
 			)
 		);
@@ -127,6 +140,130 @@ class OOPSpam_LS_Login_Protector {
 			<input type="hidden" name="oopspam_ls_token" id="oopspam-ls-token" value="" />
 		</div>
 		<?php
+	}
+
+	/**
+	 * Render the JS-presence marker.
+	 *
+	 * A hidden input is filled by an inline script. If JS doesn't run (most
+	 * bots), the field stays empty and our require_js_*_gate methods reject
+	 * the submission. A <noscript> block tells real users with JS disabled
+	 * what's wrong upfront, so they can act before submitting.
+	 *
+	 * Always rendered when require_js is enabled, regardless of widget settings,
+	 * since the JS check is independent of the verification widget.
+	 */
+	public function render_js_check_field() {
+		$settings = oopspam_ls_get_settings();
+		if ( empty( $settings['require_js'] ) ) {
+			return;
+		}
+		?>
+		<input type="hidden" name="oopspam_ls_js" id="oopspam-ls-js" value="">
+		<script>
+		(function () {
+			var el = document.getElementById('oopspam-ls-js');
+			if (el) { el.value = '1'; }
+		})();
+		</script>
+		<noscript>
+			<p style="color:#dc2626; font-size:13px; margin:8px 0; padding:10px; border:1px solid #fecaca; background:#fef2f2;">
+				<strong><?php esc_html_e( 'JavaScript is required.', 'oopspam-login-shield' ); ?></strong>
+				<?php esc_html_e( 'Please enable JavaScript in your browser to sign in.', 'oopspam-login-shield' ); ?>
+			</p>
+		</noscript>
+		<?php
+	}
+
+	/**
+	 * Helper for require_js gates: confirm the JS marker arrived.
+	 * Skips XML-RPC, REST, and CLI contexts where JS is irrelevant.
+	 *
+	 * @return bool True if the request can proceed (JS confirmed or check disabled).
+	 */
+	private function js_marker_ok(): bool {
+		$settings = oopspam_ls_get_settings();
+		if ( empty( $settings['require_js'] ) ) {
+			return true;
+		}
+		if ( ( defined( 'XMLRPC_REQUEST' ) && XMLRPC_REQUEST )
+			|| ( defined( 'REST_REQUEST' ) && REST_REQUEST )
+			|| ( defined( 'WP_CLI' ) && WP_CLI ) ) {
+			return true;
+		}
+
+		// phpcs:ignore WordPress.Security.NonceVerification.Missing
+		$marker = isset( $_POST['oopspam_ls_js'] ) ? sanitize_text_field( wp_unslash( $_POST['oopspam_ls_js'] ) ) : '';
+		return '1' === $marker;
+	}
+
+	/**
+	 * require_js gate on the login form. Runs at authenticate priority 5,
+	 * before WP's password check at 20. If the JS marker is missing, reject
+	 * before any expensive auth or API work happens.
+	 *
+	 * Lets through:
+	 *   - Already-errored requests (don't double-up errors).
+	 *   - Empty username (let WP's native error fire).
+	 *   - Non-form contexts (XML-RPC, REST, CLI).
+	 */
+	public function require_js_login_gate( $user, $username, $password ) {
+		if ( is_wp_error( $user ) ) {
+			return $user;
+		}
+		if ( empty( $username ) ) {
+			return $user;
+		}
+		// phpcs:ignore WordPress.Security.NonceVerification.Missing
+		$is_form_post = isset( $_POST['log'] ) || isset( $_POST['pwd'] );
+		if ( ! $is_form_post ) {
+			return $user;
+		}
+		if ( $this->js_marker_ok() ) {
+			return $user;
+		}
+		return new WP_Error(
+			'oopspam_ls_no_js',
+			'<strong>' . esc_html__( 'Error:', 'oopspam-login-shield' ) . '</strong> '
+			. esc_html__( 'JavaScript is required to sign in. Please enable JavaScript in your browser and try again.', 'oopspam-login-shield' )
+		);
+	}
+
+	/**
+	 * require_js gate on the registration form.
+	 *
+	 * @param WP_Error $errors
+	 * @param string   $sanitized_user_login
+	 * @param string   $user_email
+	 * @return WP_Error
+	 */
+	public function require_js_register_gate( $errors, $sanitized_user_login, $user_email ) {
+		if ( ! $this->js_marker_ok() ) {
+			$errors->add(
+				'oopspam_ls_no_js',
+				'<strong>' . esc_html__( 'Error:', 'oopspam-login-shield' ) . '</strong> '
+				. esc_html__( 'JavaScript is required to register. Please enable JavaScript in your browser and try again.', 'oopspam-login-shield' )
+			);
+		}
+		return $errors;
+	}
+
+	/**
+	 * require_js gate on the lost-password form.
+	 *
+	 * @param WP_Error $errors
+	 */
+	public function require_js_lostpassword_gate( $errors ) {
+		if ( ! ( $errors instanceof WP_Error ) ) {
+			return;
+		}
+		if ( ! $this->js_marker_ok() ) {
+			$errors->add(
+				'oopspam_ls_no_js',
+				'<strong>' . esc_html__( 'Error:', 'oopspam-login-shield' ) . '</strong> '
+				. esc_html__( 'JavaScript is required. Please enable JavaScript in your browser and try again.', 'oopspam-login-shield' )
+			);
+		}
 	}
 
 	/**

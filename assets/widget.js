@@ -101,11 +101,21 @@
 			});
 		}
 
-		// Submit gating: if not verified yet, hold the submit and verify, then resubmit.
-		// We resubmit by clicking the submit button (not by calling form.submit()) so
-		// that any other plugin's submit handlers — 2FA, additional captchas, etc. — still
-		// fire normally. We do NOT use stopPropagation here, for the same reason.
-		// A `pending` guard prevents rapid double-clicks from scheduling two resubmits.
+		// Submit gating.
+		//
+		// In MANUAL mode (autoVerify off), we never auto-trigger verification
+		// on submit. The user must click the checkbox first. If they try to
+		// submit unverified, we block submission, focus the checkbox, shake
+		// the widget for visual feedback, and update the label.
+		//
+		// In AUTO mode (autoVerify on), the widget already verifies on page
+		// load, so by the time the user submits, the state should be 'verified'.
+		// If verification is still in flight or failed, we hold the submit
+		// and resolve before resubmitting via the submit button (not
+		// form.submit()), so other plugins' submit handlers still fire.
+		//
+		// A `pending` guard prevents rapid double-clicks from scheduling
+		// two resubmits.
 		if (form) {
 			var submitBtn = form.querySelector('input[type="submit"], button[type="submit"]:not([formnovalidate])')
 				|| form.querySelector('button[type="submit"]');
@@ -117,6 +127,29 @@
 					return; // good to go — let every other handler run too
 				}
 				e.preventDefault();
+
+				// MANUAL mode: never auto-verify on submit. Force the user
+				// to click the checkbox.
+				if (!CFG.autoVerify) {
+					var msg = (s === 'verifying')
+						? (CFG.i18n.wait || CFG.i18n.verifying)
+						: (CFG.i18n.clickToVerify || "Please click the checkbox above to verify you're not a robot.");
+					if (label) label.textContent = msg;
+					// Visual cue: shake animation, focus the checkbox.
+					widget.classList.remove('oolsh-shake');
+					// Force reflow so the animation can replay.
+					void widget.offsetWidth;
+					widget.classList.add('oolsh-shake');
+					setTimeout(function () {
+						widget.classList.remove('oolsh-shake');
+					}, 700);
+					if (checkbox && typeof checkbox.focus === 'function') {
+						try { checkbox.focus(); } catch (err) {}
+					}
+					return;
+				}
+
+				// AUTO mode: hold the submit and resolve verification first.
 				if (pending) return;
 				pending = true;
 

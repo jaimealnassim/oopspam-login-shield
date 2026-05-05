@@ -177,84 +177,25 @@ class OOPSpam_LS_Token {
 	}
 
 	/**
-	 * Hashed real client IP, salted with auth salt.
+	 * Hashed remote IP, salted with auth salt.
 	 *
-	 * IMPORTANT: intentionally independent of the OOPSpam parent plugin's
-	 * `oopspamantispam_get_ip()` helper. That helper may return an empty string
-	 * when the OOPSpam "don't capture IP" privacy setting is enabled — which is
-	 * correct for what gets SENT to the OOPSpam API, but would collapse our LOCAL
-	 * token binding into a single shared hash for all visitors.
-	 *
-	 * We resolve the real client IP ourselves in priority order:
-	 *   1. CF-Connecting-IP  — Cloudflare's canonical real-client header.
-	 *   2. True-Client-IP    — Akamai / Cloudflare Enterprise.
-	 *   3. X-Real-IP         — nginx / many proxies.
-	 *   4. X-Forwarded-For   — leftmost (originating) hop; may be a list.
-	 *   5. REMOTE_ADDR       — last resort (direct connection or same-node CDN).
-	 *
-	 * Why this matters: when a CDN or load balancer is in front of WordPress,
-	 * REMOTE_ADDR is the edge-node IP. The AJAX verify request and the login
-	 * form POST may hit DIFFERENT edge nodes, producing different REMOTE_ADDR
-	 * values and causing the IP hash to mismatch — the exact bug that produced
-	 * "Verification was issued for a different network."
-	 *
-	 * We only hash the IP; we never store, log, or transmit it.
+	 * IMPORTANT: this uses REMOTE_ADDR directly and is intentionally independent
+	 * of the OOPSpam parent plugin's `oopspamantispam_get_ip()` helper. That helper
+	 * may return an empty string when the OOPSpam "don't capture IP" privacy
+	 * setting is enabled — which is correct for what gets SENT to the OOPSpam API,
+	 * but would collapse our LOCAL token binding into a single shared hash for all
+	 * visitors. Local IP binding is a separate concern: we only ever hash the IP,
+	 * we never store, log, or transmit it.
 	 *
 	 * @return string
 	 */
 	private static function ip_hash() {
-		$ip = self::resolve_client_ip();
+		$ip = ! empty( $_SERVER['REMOTE_ADDR'] )
+			? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) )
+			: '';
+
 		// Stable hash even in non-HTTP contexts (CLI tests, fallthroughs).
 		return hash( 'sha256', ( '' === $ip ? 'no-remote-addr' : $ip ) . '|' . wp_salt( 'auth' ) );
-	}
-
-	/**
-	 * Resolve the real client IP from proxy / CDN headers, falling back to
-	 * REMOTE_ADDR. Returns an empty string only in non-HTTP contexts.
-	 *
-	 * @return string Validated IPv4 or IPv6 address, or empty string.
-	 */
-	private static function resolve_client_ip() {
-		// 1. Cloudflare: CF-Connecting-IP is always the real client.
-		if ( ! empty( $_SERVER['HTTP_CF_CONNECTING_IP'] ) ) {
-			$ip = sanitize_text_field( wp_unslash( $_SERVER['HTTP_CF_CONNECTING_IP'] ) );
-			if ( filter_var( $ip, FILTER_VALIDATE_IP ) ) {
-				return $ip;
-			}
-		}
-
-		// 2. True-Client-IP (Akamai / Cloudflare Enterprise).
-		if ( ! empty( $_SERVER['HTTP_TRUE_CLIENT_IP'] ) ) {
-			$ip = sanitize_text_field( wp_unslash( $_SERVER['HTTP_TRUE_CLIENT_IP'] ) );
-			if ( filter_var( $ip, FILTER_VALIDATE_IP ) ) {
-				return $ip;
-			}
-		}
-
-		// 3. X-Real-IP (nginx, many load balancers).
-		if ( ! empty( $_SERVER['HTTP_X_REAL_IP'] ) ) {
-			$ip = sanitize_text_field( wp_unslash( $_SERVER['HTTP_X_REAL_IP'] ) );
-			if ( filter_var( $ip, FILTER_VALIDATE_IP ) ) {
-				return $ip;
-			}
-		}
-
-		// 4. X-Forwarded-For — may be a comma-separated list; take leftmost valid IP.
-		if ( ! empty( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ) {
-			$forwarded = sanitize_text_field( wp_unslash( $_SERVER['HTTP_X_FORWARDED_FOR'] ) );
-			foreach ( array_map( 'trim', explode( ',', $forwarded ) ) as $candidate ) {
-				if ( filter_var( $candidate, FILTER_VALIDATE_IP ) ) {
-					return $candidate;
-				}
-			}
-		}
-
-		// 5. Direct connection — REMOTE_ADDR is the only option left.
-		if ( ! empty( $_SERVER['REMOTE_ADDR'] ) ) {
-			return sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) );
-		}
-
-		return '';
 	}
 
 	/**

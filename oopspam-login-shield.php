@@ -3,7 +3,7 @@
  * Plugin Name: OOPSpam Login Shield
  * Plugin URI: https://nahnuplugins.com/
  * Description: Adds an Altcha-style verification widget to the WordPress login, registration, and lost-password forms. Verifies each request against the OOPSpam API to block bots, credential stuffers, and known-bad IPs.
- * Version: 1.0.2
+ * Version: 1.0.4
  * Author: Nahnu Plugins
  * Author URI: https://nahnuplugins.com/
  * Text Domain: oopspam-login-shield
@@ -49,7 +49,7 @@ if ( version_compare( PHP_VERSION, '8.1.0', '<' ) ) {
 	return;
 }
 
-define( 'OOPSPAM_LS_VERSION',   '1.0.2' );
+define( 'OOPSPAM_LS_VERSION',   '1.0.4' );
 define( 'OOPSPAM_LS_FILE',      __FILE__ );
 define( 'OOPSPAM_LS_BASENAME',  plugin_basename( __FILE__ ) );
 define( 'OOPSPAM_LS_DIR',       plugin_dir_path( __FILE__ ) );
@@ -67,7 +67,7 @@ function oopspam_ls_default_settings() {
 		'protect_login'        => 1,
 		'protect_register'     => 1,
 		'protect_lostpassword' => 0,
-		'auto_verify'          => 1,
+		'auto_verify'          => 0, // Default: manual click required, not auto-verify on load
 		'spam_message'         => __( 'Your request was blocked as suspicious. If this is a mistake, please contact the site administrator.', 'oopspam-login-shield' ),
 		'fail_message'         => __( 'Could not verify your request. Please refresh and try again.', 'oopspam-login-shield' ),
 
@@ -77,6 +77,36 @@ function oopspam_ls_default_settings() {
 		// Off by default to avoid surprising admins who deliberately turned
 		// theirs on.
 		'takeover_login'       => 0,
+
+		// Connector-specific rules. These apply ONLY to login attempts via
+		// our connector, not to the OOPSpam plugin's general site behavior.
+		// They are applied as additional filters on top of OOPSpam's normal
+		// classification, so the login form can have stricter rules than
+		// the rest of the site (e.g. block VPNs at login but let VPN users
+		// browse content).
+		//
+		// Each rule has two modes:
+		//   - 'inherit': use whatever the OOPSpam plugin is currently set to.
+		//                If they're blocking VPNs sitewide, we block at login.
+		//                If they're not, we don't.
+		//   - 'block':   force-block at login regardless of OOPSpam settings.
+		//                Lets you have stricter login rules than site rules.
+		//
+		// For the country list:
+		//   - 'inherit': use OOPSpam's countryblocklist (oopspam_countryblocklist option).
+		//   - 'custom':  use the connector_blocked_countries list defined here.
+		'connector_block_vpn_mode'        => 'inherit',
+		'connector_block_datacenter_mode' => 'inherit',
+		'connector_block_temp_email_mode' => 'inherit',
+		'connector_country_mode'          => 'inherit',
+		'connector_blocked_countries'     => '', // Comma- or newline-separated ISO 2-letter codes; only used when mode = 'custom'.
+
+		// Require JavaScript at login. Most bots don't run JavaScript; a real
+		// browser does. When this is on, every login/registration/lostpassword
+		// submission must include a JS-set marker, or it's rejected outright
+		// before any password validation. Independent of the verification
+		// widget — works even if the widget is disabled.
+		'require_js'           => 0,
 
 		// Limit Login Attempts.
 		'lla_enabled'          => 0,   // off by default — opt-in feature
@@ -210,6 +240,29 @@ function oopspam_ls_run_check( $ip, $email, $content, $args = array() ) {
 		)
 	);
 
+	// If any connector rule is in 'override' mode (block / custom), call the
+	// OOPSpam API directly with our explicit per-call parameters. This lets
+	// us enforce stricter rules at login than the rest of the site uses.
+	// 'inherit' modes for unspecified rules read from the OOPSpam plugin's
+	// own settings, so a single override doesn't accidentally disable other
+	// protections.
+	$settings = oopspam_ls_get_settings();
+	$has_override =
+		'block'  === ( $settings['connector_block_vpn_mode']        ?? 'inherit' )
+		|| 'block'  === ( $settings['connector_block_datacenter_mode'] ?? 'inherit' )
+		|| 'block'  === ( $settings['connector_block_temp_email_mode'] ?? 'inherit' )
+		|| 'custom' === ( $settings['connector_country_mode']          ?? 'inherit' );
+
+	if ( $has_override ) {
+		$direct = oopspam_ls_call_api_direct( $ip, $email, $content, $args, $settings );
+		if ( null !== $direct ) {
+			return $direct;
+		}
+		// If the direct call failed for some reason (no API key, network),
+		// fall through to the standard wrapper as a backup so we don't fail
+		// open silently.
+	}
+
 	// Preferred path: the documented public API.
 	if ( function_exists( 'oopspam_check_spam' ) ) {
 		$result = oopspam_check_spam(
@@ -252,6 +305,193 @@ function oopspam_ls_run_check( $ip, $email, $content, $args = array() ) {
 	}
 
 	return null;
+}
+
+/**
+ * Call OOPSpam's spam-detection API directly (bypassing the parent plugin's
+ * wrapper) so we can pass our own connector-specific parameters.
+ *
+ * The OOPSpam API accepts blockedCountries, blockVPN, blockDC, blockTempEmail
+ * etc. as per-request parameters. Their plugin populates these from sitewide
+ * settings; we populate them from our own settings, so the login form can
+ * have stricter rules than the rest of the site.
+ *
+ * Reuses OOPSpam's stored API key — we are still calling their API, just with
+ * our own parameters per request.
+ *
+ * @param string $ip
+ * @param string $email
+ * @param string $content
+ * @param array  $args     Original args passed to run_check (for logging).
+ * @param array  $settings Our plugin settings (already loaded).
+ * @return array|null Normalized result, or null on failure (caller should fall through).
+ */
+function oopspam_ls_call_api_direct( $ip, $email, $content, $args, $settings ) {
+	if ( ! function_exists( 'oopspamantispam_get_key' ) ) {
+		return null;
+	}
+	$api_key = oopspamantispam_get_key();
+	if ( empty( $api_key ) ) {
+		return null;
+	}
+
+	// Endpoint detection mirrors OOPSpamAPI.php: RapidAPI vs direct.
+	$opts = get_option( 'oopspamantispam_settings', array() );
+	if ( is_array( $opts ) && isset( $opts['oopspam_api_key_source'] ) && 'RapidAPI' === $opts['oopspam_api_key_source'] ) {
+		$endpoint = 'https://oopspam.p.rapidapi.com/v1/spamdetection';
+		$headers  = array(
+			'content-type'   => 'application/json',
+			'accept'         => 'application/json',
+			'x-rapidapi-key' => $api_key,
+		);
+	} else {
+		$endpoint = 'https://api.oopspam.com/v1/spamdetection';
+		$headers  = array(
+			'content-type' => 'application/json',
+			'accept'       => 'application/json',
+			'X-Api-Key'    => $api_key,
+		);
+	}
+
+	// Resolve each rule's effective value based on its mode. 'inherit' reads
+	// the OOPSpam plugin's own setting; 'block' forces the rule on regardless;
+	// 'custom' (country only) uses our list.
+	$ipfilter_opts = get_option( 'oopspamantispam_ipfiltering_settings', array() );
+	if ( ! is_array( $ipfilter_opts ) ) {
+		$ipfilter_opts = array();
+	}
+
+	$block_vpn = ( 'block' === ( $settings['connector_block_vpn_mode'] ?? 'inherit' ) )
+		? true
+		: ! empty( $ipfilter_opts['oopspam_block_vpns'] );
+
+	$block_dc = ( 'block' === ( $settings['connector_block_datacenter_mode'] ?? 'inherit' ) )
+		? true
+		: ! empty( $ipfilter_opts['oopspam_block_cloud_providers'] );
+
+	// Temp email lives on the main settings option, not ipfiltering.
+	$block_temp = ( 'block' === ( $settings['connector_block_temp_email_mode'] ?? 'inherit' ) )
+		? true
+		: ! empty( $opts['oopspam_block_temp_email'] );
+
+	// Country list: inherit reads OOPSpam's standalone option oopspam_countryblocklist.
+	// OOPSpam stores it as an array (their UI is a multi-select). Fall back to
+	// string handling for older or hand-edited installs.
+	$blocked_countries = array();
+	if ( 'custom' === ( $settings['connector_country_mode'] ?? 'inherit' ) ) {
+		$raw_countries = (string) ( $settings['connector_blocked_countries'] ?? '' );
+	} else {
+		$inherited = get_option( 'oopspam_countryblocklist', '' );
+		if ( is_array( $inherited ) ) {
+			$raw_countries = implode( ',', $inherited );
+		} else {
+			$raw_countries = (string) $inherited;
+		}
+	}
+	if ( '' !== trim( $raw_countries ) ) {
+		$parts = preg_split( '/[\s,]+/', $raw_countries );
+		foreach ( (array) $parts as $code ) {
+			$code = strtoupper( trim( (string) $code ) );
+			if ( 2 === strlen( $code ) && ctype_alpha( $code ) ) {
+				$blocked_countries[] = $code;
+			}
+		}
+	}
+
+	$parameters = array(
+		'content'          => (string) $content,
+		'senderIP'         => (string) $ip,
+		'email'            => (string) $email,
+		'checkForLength'   => 'false', // Login flows have no real content body, never length-check.
+		'logIt'            => 'false', // We do our own logging via $args['log'] below.
+		'blockTempEmail'   => $block_temp ? 'true' : 'false',
+		'blockVPN'         => $block_vpn ? 'true' : 'false',
+		'blockDC'          => $block_dc ? 'true' : 'false',
+		'blockedCountries' => $blocked_countries,
+	);
+
+	$response = wp_remote_post(
+		$endpoint,
+		array(
+			'body'    => wp_json_encode( $parameters ),
+			'headers' => $headers,
+			'timeout' => 20,
+		)
+	);
+
+	if ( is_wp_error( $response ) ) {
+		if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+			error_log( 'OOPSpam Login Shield: direct API call failed: ' . $response->get_error_message() );
+		}
+		return null;
+	}
+
+	$code = (int) wp_remote_retrieve_response_code( $response );
+	$body = wp_remote_retrieve_body( $response );
+	$data = json_decode( $body, true );
+
+	if ( 200 !== $code || ! is_array( $data ) || ! isset( $data['Score'] ) ) {
+		if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+			error_log( 'OOPSpam Login Shield: direct API call returned unexpected response. Code=' . $code . ' Body=' . $body );
+		}
+		return null;
+	}
+
+	$score   = (int) $data['Score'];
+	$details = isset( $data['Details'] ) && is_array( $data['Details'] ) ? $data['Details'] : array();
+
+	// Score >= 3 traditionally counts as spam in OOPSpam. We also treat any
+	// truthy hard-block flag in Details as spam, which catches our connector
+	// rules (Country_blocked, VPN, DC, etc).
+	$is_spam = $score >= 3;
+	if ( ! empty( $details ) ) {
+		// Hard-block flags returned by OOPSpam when our parameters trip.
+		$hard_blocks = array(
+			'isIPBlocked',
+			'isEmailBlocked',
+			'isContentTooShort',
+		);
+		foreach ( $hard_blocks as $flag ) {
+			if ( isset( $details[ $flag ] ) && true === $details[ $flag ] ) {
+				$is_spam = true;
+				break;
+			}
+		}
+		// Country blocked check: API sets countryMatch=true with high score
+		// when sender country is in blockedCountries.
+		if ( isset( $details['countryMatch'] ) && true === $details['countryMatch'] && $score >= 6 ) {
+			$is_spam = true;
+		}
+	}
+
+	$reason = isset( $data['Reason'] ) ? (string) $data['Reason'] : '';
+	if ( '' === $reason && function_exists( 'extractReasonFromAPIResponse' ) ) {
+		$reason = (string) extractReasonFromAPIResponse( $data );
+	}
+
+	// Log to OOPSpam's standard Spam/Ham Entries tables ourselves so admins
+	// still see these in the OOPSpam admin dashboard alongside everything else.
+	if ( ! empty( $args['log'] ) ) {
+		$frm_entry = array(
+			'Score'    => $score,
+			'Message'  => sanitize_textarea_field( (string) $content ),
+			'IP'       => sanitize_text_field( (string) $ip ),
+			'Email'    => sanitize_email( (string) $email ),
+			'RawEntry' => (string) ( $args['raw_data'] ?? '' ),
+			'FormId'   => sanitize_text_field( (string) ( $args['form_id'] ?? '' ) ),
+		);
+		if ( $is_spam && function_exists( 'oopspam_store_spam_submission' ) ) {
+			oopspam_store_spam_submission( $frm_entry, $reason );
+		} elseif ( ! $is_spam && function_exists( 'oopspam_store_ham_submission' ) ) {
+			oopspam_store_ham_submission( $frm_entry );
+		}
+	}
+
+	return array(
+		'Score'  => $score,
+		'isSpam' => $is_spam,
+		'Reason' => $reason,
+	);
 }
 
 /**
