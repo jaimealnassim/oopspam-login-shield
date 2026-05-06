@@ -27,9 +27,18 @@ class OOPSpam_LS_Token {
 	public static function issue( $payload = array() ) {
 		$nonce = wp_generate_password( 16, false );
 
+		// Use the same binding mode at issue time as we'll use at validate
+		// time. When mode is 'off', we still embed a stable placeholder so
+		// the payload schema doesn't change; the validator skips the check
+		// entirely in that mode, so the value is never compared.
+		$mode = self::resolve_binding_mode();
+		$iph  = ( 'off' === $mode )
+			? hash( 'sha256', 'binding-off|' . wp_salt( 'auth' ) )
+			: self::ip_hash( $mode );
+
 		$data = array(
 			'iat' => time(),
-			'iph' => self::ip_hash(),
+			'iph' => $iph,
 			'n'   => $nonce,
 			'p'   => is_array( $payload ) ? $payload : array(),
 		);
@@ -140,10 +149,24 @@ class OOPSpam_LS_Token {
 			return new WP_Error( 'oopspam_ls_expired', __( 'Verification expired. Please refresh and try again.', 'oopspam-login-shield' ) );
 		}
 
-		// IP binding check (allows admins to override via filter for proxy-heavy setups).
-		$enforce_ip = (bool) apply_filters( 'oopspam_ls_enforce_ip_binding', true );
-		if ( $enforce_ip && ! hash_equals( $data['iph'], self::ip_hash() ) ) {
-			return new WP_Error( 'oopspam_ls_ip', __( 'Verification was issued for a different network. Please refresh.', 'oopspam-login-shield' ) );
+		// IP binding check, mode-aware.
+		//
+		//   off:    skip the check entirely. Token is still HMAC-signed, single-use,
+		//           and time-bound, which is sufficient for almost every site.
+		//   subnet: bind to the visitor's network neighborhood (IPv4 /24, IPv6 /64).
+		//           Allows IP-shift within a single ISP/CDN region.
+		//   strict: bind to the exact IP. Most secure but most likely to false-
+		//           positive when visitors are behind multi-edge CDNs.
+		//
+		// The legacy oopspam_ls_enforce_ip_binding filter still works as a
+		// boolean override for backward compatibility: returning false forces
+		// 'off' mode regardless of the setting.
+		$mode = self::resolve_binding_mode();
+		if ( 'off' !== $mode && ! hash_equals( $data['iph'], self::ip_hash( $mode ) ) ) {
+			return new WP_Error(
+				'oopspam_ls_ip',
+				__( 'Verification was issued for a different network. Please refresh.', 'oopspam-login-shield' )
+			);
 		}
 
 		// Single-use check, atomic check-and-consume.
@@ -177,25 +200,104 @@ class OOPSpam_LS_Token {
 	}
 
 	/**
+	 * Resolve the IP binding mode currently in effect.
+	 *
+	 * Reads the `ip_binding_mode` setting (off | subnet | strict, default off)
+	 * and applies the legacy `oopspam_ls_enforce_ip_binding` filter for
+	 * backward compatibility (returning false from that filter forces 'off'
+	 * regardless of the setting).
+	 *
+	 * @return string One of 'off', 'subnet', 'strict'.
+	 */
+	private static function resolve_binding_mode(): string {
+		$settings = function_exists( 'oopspam_ls_get_settings' ) ? oopspam_ls_get_settings() : array();
+		$mode     = isset( $settings['ip_binding_mode'] ) ? (string) $settings['ip_binding_mode'] : 'off';
+		if ( ! in_array( $mode, array( 'off', 'subnet', 'strict' ), true ) ) {
+			$mode = 'off';
+		}
+
+		// Legacy filter: returning false short-circuits to 'off'.
+		if ( false === apply_filters( 'oopspam_ls_enforce_ip_binding', true ) ) {
+			$mode = 'off';
+		}
+
+		return $mode;
+	}
+
+	/**
 	 * Hashed remote IP, salted with auth salt.
 	 *
-	 * IMPORTANT: this uses REMOTE_ADDR directly and is intentionally independent
-	 * of the OOPSpam parent plugin's `oopspamantispam_get_ip()` helper. That helper
-	 * may return an empty string when the OOPSpam "don't capture IP" privacy
-	 * setting is enabled — which is correct for what gets SENT to the OOPSpam API,
-	 * but would collapse our LOCAL token binding into a single shared hash for all
-	 * visitors. Local IP binding is a separate concern: we only ever hash the IP,
-	 * we never store, log, or transmit it.
+	 * IMPORTANT: this uses REMOTE_ADDR directly and is intentionally
+	 * independent of OOPSpam's `oopspamantispam_get_ip()` helper. That helper
+	 * returns an empty string when OOPSpam's "don't capture IP" privacy
+	 * setting is on (correct for what gets sent to the OOPSpam API, wrong
+	 * for our local token binding which would collapse to a single shared
+	 * hash for all visitors). We only ever hash the IP; we never store,
+	 * log, or transmit it.
 	 *
+	 * Modes:
+	 *   - strict: hash the full IP
+	 *   - subnet: hash the network portion (IPv4 /24, IPv6 /64). This trades
+	 *     some specificity for resilience against multi-edge CDN routing.
+	 *
+	 * @param string $mode Binding mode ('strict' or 'subnet'). 'off' should
+	 *                     not reach here; the caller checks before calling.
 	 * @return string
 	 */
-	private static function ip_hash() {
+	private static function ip_hash( string $mode = 'strict' ): string {
 		$ip = ! empty( $_SERVER['REMOTE_ADDR'] )
 			? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) )
 			: '';
 
-		// Stable hash even in non-HTTP contexts (CLI tests, fallthroughs).
-		return hash( 'sha256', ( '' === $ip ? 'no-remote-addr' : $ip ) . '|' . wp_salt( 'auth' ) );
+		if ( '' === $ip ) {
+			return hash( 'sha256', 'no-remote-addr|' . wp_salt( 'auth' ) );
+		}
+
+		if ( 'subnet' === $mode ) {
+			$ip = self::ip_to_subnet( $ip );
+		}
+
+		return hash( 'sha256', $ip . '|' . wp_salt( 'auth' ) );
+	}
+
+	/**
+	 * Reduce an IP address to its network subnet.
+	 *
+	 * IPv4: drop the last octet (/24). 192.0.2.42 -> 192.0.2.0
+	 * IPv6: keep first 4 hex groups (/64). 2001:db8::1 -> 2001:db8:0:0
+	 *
+	 * Falls back to the input unchanged on parse failure (so we still get a
+	 * stable hash, just less coarse than intended).
+	 *
+	 * @param string $ip
+	 * @return string Subnet representation of the IP.
+	 */
+	private static function ip_to_subnet( string $ip ): string {
+		// IPv4: a.b.c.d -> a.b.c.0
+		if ( false !== filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 ) ) {
+			$parts = explode( '.', $ip );
+			if ( 4 === count( $parts ) ) {
+				return $parts[0] . '.' . $parts[1] . '.' . $parts[2] . '.0';
+			}
+			return $ip;
+		}
+
+		// IPv6: keep first 64 bits (4 groups of 16 bits). inet_pton + truncate
+		// is the canonical way; falls back to text manipulation if pton fails.
+		if ( false !== filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6 ) ) {
+			$packed = @inet_pton( $ip );
+			if ( false !== $packed && 16 === strlen( $packed ) ) {
+				// Keep first 8 bytes (64 bits), zero the rest.
+				$truncated = substr( $packed, 0, 8 ) . str_repeat( "\0", 8 );
+				$readable  = inet_ntop( $truncated );
+				if ( false !== $readable ) {
+					return $readable;
+				}
+			}
+			return $ip;
+		}
+
+		return $ip;
 	}
 
 	/**

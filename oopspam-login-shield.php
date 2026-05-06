@@ -3,7 +3,7 @@
  * Plugin Name: OOPSpam Login Shield
  * Plugin URI: https://nahnuplugins.com/
  * Description: Adds an Altcha-style verification widget to the WordPress login, registration, and lost-password forms. Verifies each request against the OOPSpam API to block bots, credential stuffers, and known-bad IPs.
- * Version: 1.0.4
+ * Version: 1.0.5
  * Author: Nahnu Plugins
  * Author URI: https://nahnuplugins.com/
  * Text Domain: oopspam-login-shield
@@ -49,7 +49,7 @@ if ( version_compare( PHP_VERSION, '8.1.0', '<' ) ) {
 	return;
 }
 
-define( 'OOPSPAM_LS_VERSION',   '1.0.4' );
+define( 'OOPSPAM_LS_VERSION',   '1.0.5' );
 define( 'OOPSPAM_LS_FILE',      __FILE__ );
 define( 'OOPSPAM_LS_BASENAME',  plugin_basename( __FILE__ ) );
 define( 'OOPSPAM_LS_DIR',       plugin_dir_path( __FILE__ ) );
@@ -70,6 +70,28 @@ function oopspam_ls_default_settings() {
 		'auto_verify'          => 0, // Default: manual click required, not auto-verify on load
 		'spam_message'         => __( 'Your request was blocked as suspicious. If this is a mistake, please contact the site administrator.', 'oopspam-login-shield' ),
 		'fail_message'         => __( 'Could not verify your request. Please refresh and try again.', 'oopspam-login-shield' ),
+
+		// IP binding for verification tokens.
+		//
+		//   'off':     Don't bind tokens to an IP. The token is still HMAC-signed,
+		//              single-use, and time-bound, which is sufficient for almost
+		//              every site. This is the default because real sites
+		//              increasingly sit behind Cloudflare/Fastly/Bunny/etc., where
+		//              the visitor's apparent IP can change between AJAX preflight
+		//              and form submit (different edge servers, different POPs).
+		//              False positives there block legitimate logins.
+		//
+		//   'subnet':  Bind to a coarse network neighborhood: IPv4 /24, IPv6 /64.
+		//              Allows IP-shift within a single carrier or CDN region while
+		//              still rejecting tokens replayed from a totally different
+		//              network. A reasonable middle ground if your visitors aren't
+		//              behind heavy proxy stacks.
+		//
+		//   'strict':  Bind to the exact IP. Most secure but most likely to false-
+		//              positive. Use only if you're sure your IP detection is
+		//              stable per-visitor (e.g. direct hosting, no CDN, OOPSpam's
+		//              "Trust proxy headers" is correctly configured).
+		'ip_binding_mode'      => 'off',
 
 		// When on, programmatically forces OOPSpam Anti-Spam's "WP login
 		// protection" toggle to OFF, so our login layer is the only one
