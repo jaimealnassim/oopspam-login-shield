@@ -154,13 +154,6 @@ class OOPSpam_LS_Settings {
 			? sanitize_text_field( $input['fail_message'] )
 			: $defaults['fail_message'];
 
-		// IP binding mode for verification tokens.
-		$clean['ip_binding_mode'] = self::clamp_mode(
-			$input['ip_binding_mode'] ?? null,
-			array( 'off', 'subnet', 'strict' ),
-			$defaults['ip_binding_mode']
-		);
-
 		// Coordination with OOPSpam Anti-Spam.
 		$clean['takeover_login'] = ! empty( $input['takeover_login'] ) ? 1 : 0;
 
@@ -419,34 +412,6 @@ class OOPSpam_LS_Settings {
 					<td>
 						<input type="text" id="oopspam_ls_fail_message" class="large-text" name="oopspam_ls_settings[fail_message]" value="<?php echo esc_attr( $s['fail_message'] ); ?>">
 						<p class="description"><?php esc_html_e( 'Shown in the widget when the AJAX check fails (network error, expired token, etc.).', 'oopspam-login-shield' ); ?></p>
-					</td>
-				</tr>
-
-				<tr>
-					<th scope="row"><?php esc_html_e( 'Token IP binding', 'oopspam-login-shield' ); ?></th>
-					<td>
-						<fieldset>
-							<legend class="screen-reader-text"><?php esc_html_e( 'Token IP binding mode', 'oopspam-login-shield' ); ?></legend>
-							<?php $ipbm = $s['ip_binding_mode'] ?? 'off'; ?>
-							<label style="display:block; margin-bottom:6px;">
-								<input type="radio" name="oopspam_ls_settings[ip_binding_mode]" value="off" <?php checked( $ipbm, 'off' ); ?>>
-								<strong><?php esc_html_e( 'Off (recommended for sites behind Cloudflare, Bunny, Fastly, etc.).', 'oopspam-login-shield' ); ?></strong>
-								<?php esc_html_e( "Tokens are still HMAC-signed, single-use, and time-bound, which is sufficient for almost every site. This is the default because multi-edge CDNs can route the AJAX preflight and the form submit through different IPs, falsely tripping stricter modes.", 'oopspam-login-shield' ); ?>
-							</label>
-							<label style="display:block; margin-bottom:6px;">
-								<input type="radio" name="oopspam_ls_settings[ip_binding_mode]" value="subnet" <?php checked( $ipbm, 'subnet' ); ?>>
-								<strong><?php esc_html_e( 'Subnet (IPv4 /24, IPv6 /64).', 'oopspam-login-shield' ); ?></strong>
-								<?php esc_html_e( 'Allows IP-shift within the same ISP or CDN region but rejects tokens replayed from a totally different network. Reasonable middle ground if your visitors are not behind heavy proxy stacks.', 'oopspam-login-shield' ); ?>
-							</label>
-							<label style="display:block;">
-								<input type="radio" name="oopspam_ls_settings[ip_binding_mode]" value="strict" <?php checked( $ipbm, 'strict' ); ?>>
-								<strong><?php esc_html_e( 'Strict (exact IP).', 'oopspam-login-shield' ); ?></strong>
-								<?php esc_html_e( 'Most secure but most likely to false-positive. Only use this if you are sure your IP detection is stable per visitor (direct hosting, no CDN, or OOPSpam\'s "Trust proxy headers" is correctly configured).', 'oopspam-login-shield' ); ?>
-							</label>
-						</fieldset>
-						<p class="description" style="margin-top:8px;">
-							<?php esc_html_e( 'If you see "Verification was issued for a different network" errors with valid logins, switch this to Off.', 'oopspam-login-shield' ); ?>
-						</p>
 					</td>
 				</tr>
 
